@@ -10,14 +10,21 @@ mod pending_block;
 
 pub use receipt::{OpReceiptBuilder, OpReceiptFieldsBuilder};
 
-use alloy_primitives::U256;
+use crate::{OpEthApiError, SequencerClient};
+use alloy_consensus::BlockHeader;
+use alloy_eips::BlockId;
+use alloy_primitives::{Address, Bytes, U256};
+use jsonrpsee::http_client::{HttpClient, HttpClientBuilder};
+use jsonrpsee_core::client::ClientT;
 use op_alloy_network::Optimism;
 use reth_chainspec::{EthChainSpec, EthereumHardforks};
 use reth_evm::ConfigureEvm;
 use reth_network_api::NetworkInfo;
 use reth_node_api::NodePrimitives;
 use reth_node_builder::EthApiBuilderCtx;
+use reth_optimism_forks::OpHardforks;
 use reth_optimism_primitives::OpPrimitives;
+use reth_primitives_traits::Block;
 use reth_provider::{
     BlockNumReader, BlockReader, BlockReaderIdExt, CanonStateSubscriptions, ChainSpecProvider,
     NodePrimitivesProvider, ProviderBlock, ProviderHeader, ProviderReceipt, ProviderTx,
@@ -37,9 +44,10 @@ use reth_tasks::{
     TaskSpawner,
 };
 use reth_transaction_pool::TransactionPool;
+use revm::primitives::bitvec::macros::internal::funty::Fundamental;
+use std::future::Future;
+use std::time::Duration;
 use std::{fmt, sync::Arc};
-
-use crate::{OpEthApiError, SequencerClient};
 
 /// Adapter for [`EthApiInner`], which holds all the data required to serve core `eth_` API.
 pub type EthApiNodeBackend<N> = EthApiInner<
@@ -89,9 +97,40 @@ where
         self.inner.sequencer_client()
     }
 
+    /// Returns the historical rpc provider, if any.
+    pub fn historical_rpc_provider(&self) -> Option<&HttpClient> {
+        self.inner.historical_rpc_provider()
+    }
+
     /// Build a [`OpEthApi`] using [`OpEthApiBuilder`].
     pub const fn builder() -> OpEthApiBuilder {
         OpEthApiBuilder::new()
+    }
+
+    fn is_optimism_pre_bedrock(&self, block_id: BlockId) -> bool {
+        let provider = self.eth_api().provider();
+        let block_number = match block_id {
+            BlockId::Hash(hash) => {
+                let block = provider.block_by_hash(hash.block_hash);
+                let block_number = match block {
+                    Ok(Some(block)) => block.header().number().as_u64(),
+                    _ => return false,
+                };
+
+                block_number
+            }
+            BlockId::Number(block_num_or_tag) => {
+                let block_number = match block_num_or_tag.as_number() {
+                    Some(block_number) => block_number,
+                    None => return false,
+                };
+
+                block_number
+            }
+        };
+
+        let config = self.eth_api().evm_config();
+        config.is_optimism() && !config.is_bedrock_active_at_block(block_number)
     }
 }
 
@@ -229,11 +268,49 @@ impl<N> LoadState for OpEthApi<N> where
 impl<N> EthState for OpEthApi<N>
 where
     Self: LoadState + SpawnBlocking,
-    N: OpNodeCore,
+    N: OpNodeCore<
+        Provider: BlockReaderIdExt
+                      + CanonStateSubscriptions<Primitives = OpPrimitives>
+                      + ChainSpecProvider
+                      + NodePrimitivesProvider,
+        Evm: EthChainSpec + OpHardforks,
+    >,
 {
     #[inline]
     fn max_proof_window(&self) -> u64 {
         self.inner.eth_api.eth_proof_window()
+    }
+
+    fn get_code(
+        &self,
+        address: Address,
+        block_id: Option<BlockId>,
+    ) -> impl Future<Output = Result<Bytes, Self::Error>> + Send {
+        match block_id {
+            Some(block_id) => {
+                if self.is_optimism_pre_bedrock(block_id) {
+                    if let Some(historical_rpc) = self.historical_rpc_provider() {
+                        // return self.spawn_blocking_io(async move |this| {
+                        //     let tmp: Result<Bytes, _> = tokio::time::timeout(
+                        //         std::time::Duration::from_secs(5),
+                        //         historical_rpc
+                        //             .request("eth_getCode", rpc_params![address, block_id]),
+                        //     )
+                        //     .await
+                        //     .unwrap_or_else(|_| Ok(Bytes::default()))
+                        //     .and_then(|res| Ok(res));
+                        //
+                        //     return Ok(tmp.unwrap());
+                        // });
+                    } else {
+                        // TODO: Return error
+                    }
+                }
+            }
+            _ => {}
+        }
+
+        LoadState::get_code(self, address, block_id)
     }
 }
 
@@ -281,6 +358,8 @@ struct OpEthApiInner<N: OpNodeCore> {
     /// Sequencer client, configured to forward submitted transactions to sequencer of given OP
     /// network.
     sequencer_client: Option<SequencerClient>,
+
+    historical_rpc_provider: Option<HttpClient>,
 }
 
 impl<N: OpNodeCore> OpEthApiInner<N> {
@@ -292,6 +371,11 @@ impl<N: OpNodeCore> OpEthApiInner<N> {
     /// Returns the configured sequencer client, if any.
     const fn sequencer_client(&self) -> Option<&SequencerClient> {
         self.sequencer_client.as_ref()
+    }
+
+    /// Returns the historical rpc provider, if any.
+    const fn historical_rpc_provider(&self) -> Option<&HttpClient> {
+        self.historical_rpc_provider.as_ref()
     }
 }
 
@@ -349,8 +433,18 @@ impl OpEthApiBuilder {
             ctx.config.proof_permits,
         );
 
+        let historical_rpc_url = "".to_string();
+        let historical_rpc_client = HttpClientBuilder::default()
+            .request_timeout(Duration::from_secs(60))
+            .build(historical_rpc_url)
+            .unwrap();
+
         OpEthApi {
-            inner: Arc::new(OpEthApiInner { eth_api, sequencer_client: self.sequencer_client }),
+            inner: Arc::new(OpEthApiInner {
+                eth_api,
+                sequencer_client: self.sequencer_client,
+                historical_rpc_provider: Some(historical_rpc_client),
+            }),
         }
     }
 }
