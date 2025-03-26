@@ -4,13 +4,14 @@ use alloy_consensus::Header;
 use alloy_primitives::BlockNumber;
 use core::marker::PhantomData;
 use reth_chainspec::{ChainSpecProvider, EthereumHardforks};
-use reth_db::{
+use reth_db_api::{
     cursor::{DbCursorRO, DbCursorRW},
-    models::{StoredBlockOmmers, StoredBlockWithdrawals},
+    models::StoredBlockOmmers,
     tables,
     transaction::{DbTx, DbTxMut},
     DbTxUnwindExt,
 };
+use reth_db_models::StoredBlockWithdrawals;
 use reth_ethereum_primitives::TransactionSigned;
 use reth_primitives_traits::{
     Block, BlockBody, FullBlockHeader, FullNodePrimitives, SignedTransaction,
@@ -176,7 +177,7 @@ where
             } else {
                 None
             };
-            let ommers = if chain_spec.final_paris_total_difficulty(header.number()).is_some() {
+            let ommers = if chain_spec.is_paris_active_at_block(header.number()) {
                 Vec::new()
             } else {
                 provider.ommers(header.number().into())?.unwrap_or_default()

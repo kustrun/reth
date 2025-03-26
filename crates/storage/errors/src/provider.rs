@@ -8,6 +8,7 @@ use derive_more::Display;
 use reth_primitives_traits::{transaction::signed::RecoveryError, GotExpected};
 use reth_prune_types::PruneSegmentError;
 use reth_static_file_types::StaticFileSegment;
+use revm_database_interface::DBErrorMarker;
 
 /// Provider result type.
 pub type ProviderResult<Ok> = Result<Ok, ProviderError>;
@@ -139,7 +140,7 @@ pub enum ProviderError {
     /// Received invalid output from configured storage implementation.
     #[error("received invalid output from storage")]
     InvalidStorageOutput,
-    /// Any other error type wrapped into a clonable [`AnyError`].
+    /// Any other error type wrapped into a cloneable [`AnyError`].
     #[error(transparent)]
     Other(#[from] AnyError),
 }
@@ -176,6 +177,8 @@ impl ProviderError {
         self.as_other().map(|err| err.is::<T>()).unwrap_or(false)
     }
 }
+
+impl DBErrorMarker for ProviderError {}
 
 impl From<alloy_rlp::Error> for ProviderError {
     fn from(error: alloy_rlp::Error) -> Self {

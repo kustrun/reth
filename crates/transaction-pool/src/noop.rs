@@ -6,10 +6,8 @@
 use crate::{
     blobstore::BlobStoreError,
     error::PoolError,
-    traits::{
-        BestTransactionsAttributes, GetPooledTransactionLimit, NewBlobSidecar,
-        TransactionListenerKind,
-    },
+    pool::TransactionListenerKind,
+    traits::{BestTransactionsAttributes, GetPooledTransactionLimit, NewBlobSidecar},
     validate::ValidTransaction,
     AllPoolTransactions, AllTransactionsEvents, BestTransactions, BlockInfo, EthPoolTransaction,
     EthPooledTransaction, NewTransactionEvent, PoolResult, PoolSize, PoolTransaction,
@@ -22,7 +20,7 @@ use alloy_eips::{
 };
 use alloy_primitives::{Address, TxHash, B256, U256};
 use reth_eth_wire_types::HandleMempoolData;
-use reth_primitives::Recovered;
+use reth_primitives_traits::Recovered;
 use std::{collections::HashSet, marker::PhantomData, sync::Arc};
 use tokio::sync::{mpsc, mpsc::Receiver};
 
