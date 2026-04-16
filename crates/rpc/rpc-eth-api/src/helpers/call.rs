@@ -154,13 +154,6 @@ pub trait EthCall: EstimateCall + Call + LoadPendingBlock + LoadBlock + FullEthA
                     evm_env.block_env.inner_mut().prevrandao = Some(B256::ZERO);
 
                     if let Some(block_overrides) = block_overrides {
-                        // ensure we don't allow uncapped gas limit per block
-                        if let Some(gas_limit_override) = block_overrides.gas_limit &&
-                            gas_limit_override > evm_env.block_env.gas_limit() &&
-                            gas_limit_override > this.call_gas_limit()
-                        {
-                            return Err(EthApiError::other(EthSimulateError::GasLimitReached).into())
-                        }
                         apply_block_overrides(
                             block_overrides,
                             &mut db,
