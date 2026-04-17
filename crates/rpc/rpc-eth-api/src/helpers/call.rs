@@ -101,6 +101,17 @@ pub trait EthCall: EstimateCall + Call + LoadPendingBlock + LoadBlock + FullEthA
                 let mut prev_block_number = parent.number();
                 let mut prev_timestamp = parent.timestamp();
 
+                // Shared simulation gas budget across every block and every call in this
+                // `eth_simulateV1` request. One RPC request gets one `--rpc.gascap` budget, and
+                // each call's actual gas usage depletes it — matching the spec's recommended
+                // DoS mitigation (bound total simulate gas at the `eth_call` cap, which is
+                // what geth/op-geth do via a single gas pool). `call_gas_limit() == 0` means
+                // "no cap", represented here as `u64::MAX`.
+                let mut remaining_budget = match this.call_gas_limit() {
+                    0 => u64::MAX,
+                    cap => cap,
+                };
+
                 for block in block_state_calls {
                     // Validate block number ordering if overridden
                     if let Some(number) = block.block_overrides.as_ref().and_then(|o| o.number) {
@@ -182,17 +193,12 @@ pub trait EthCall: EstimateCall + Call + LoadPendingBlock + LoadBlock + FullEthA
                         }
 
                         if txs_without_gas_limit > 0 {
-                            // Per spec: "gasLimit: blockGasLimit - soFarUsedGasInBlock"
-                            // Divide remaining gas equally among transactions without gas
-                            let gas_per_tx = (block_gas_limit - total_specified_gas) /
-                                txs_without_gas_limit as u64;
-                            // Cap to RPC gas limit, matching spec behavior
-                            let call_gas_limit = this.call_gas_limit();
-                            if call_gas_limit > 0 {
-                                gas_per_tx.min(call_gas_limit)
-                            } else {
-                                gas_per_tx
-                            }
+                            // Per spec: "gasLimit: blockGasLimit - soFarUsedGasInBlock".
+                            // Divide remaining block gas equally among transactions without
+                            // explicit gas. The shared `remaining_budget` (rpc.gascap) is
+                            // applied dynamically inside `execute_transactions`, so no static
+                            // clamp to `call_gas_limit` is needed here.
+                            (block_gas_limit - total_specified_gas) / txs_without_gas_limit as u64
                         } else {
                             0
                         }
@@ -233,6 +239,7 @@ pub trait EthCall: EstimateCall + Call + LoadPendingBlock + LoadBlock + FullEthA
                             default_gas_limit,
                             chain_id,
                             this.converter(),
+                            &mut remaining_budget,
                         )
                         .map_err(map_err)?
                     } else {
@@ -253,6 +260,7 @@ pub trait EthCall: EstimateCall + Call + LoadPendingBlock + LoadBlock + FullEthA
                             default_gas_limit,
                             chain_id,
                             this.converter(),
+                            &mut remaining_budget,
                         )
                         .map_err(map_err)?
                     };
